@@ -1,0 +1,10 @@
+{
+  "name": "cat-pic-app-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint"
+  }
+}
