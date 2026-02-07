@@ -8,6 +8,7 @@ const env = loadEnv();
 export interface AuthUser {
   id: string;
   email: string;
+  role: string;
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -21,7 +22,7 @@ interface TokenPayload extends AuthUser {
 export const signAccessToken = (user: AuthUser): string => {
   const jti = crypto.randomUUID();
   return jwt.sign(
-    { id: user.id, email: user.email, jti },
+    { id: user.id, email: user.email, role: user.role, jti },
     env.JWT_SECRET,
     { expiresIn: "1h" },
   );
@@ -57,10 +58,26 @@ export const requireAuth = async (
       return res.status(401).json({ error: "token_revoked" });
     }
 
-    req.user = { id: decoded.id, email: decoded.email };
+    req.user = { id: decoded.id, email: decoded.email, role: decoded.role };
     return next();
   } catch {
     return res.status(401).json({ error: "invalid_token" });
   }
+};
+
+export const requireAdmin = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  return next();
 };
 

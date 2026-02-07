@@ -36,10 +36,10 @@ router.post("/signup", async (req: Request, res: Response) => {
     .values({ email, passwordHash })
     .returning();
 
-  const token = signAccessToken({ id: created.id, email: created.email });
+  const token = signAccessToken({ id: created.id, email: created.email, role: created.role });
 
   return res.status(201).json({
-    user: { id: created.id, email: created.email },
+    user: { id: created.id, email: created.email, role: created.role },
     token,
   });
 });
@@ -65,10 +65,10 @@ router.post("/login", async (req: Request, res: Response) => {
     return res.status(401).json({ error: "invalid_credentials" });
   }
 
-  const token = signAccessToken({ id: user.id, email: user.email });
+  const token = signAccessToken({ id: user.id, email: user.email, role: user.role });
 
   return res.json({
-    user: { id: user.id, email: user.email },
+    user: { id: user.id, email: user.email, role: user.role },
     token,
   });
 });

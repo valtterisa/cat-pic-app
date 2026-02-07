@@ -6,15 +6,17 @@ import { apiKeysRouter } from "./modules/api-keys/routes";
 import { quotesRouter } from "./modules/quotes/routes";
 import { apiRateLimit, authRateLimit } from "./middleware/rate-limit";
 import { errorHandler } from "./middleware/error";
+import { loadEnv } from "./config/env";
 
 export const createApp = () => {
   const app = express();
+  const env = loadEnv();
   app.set("trust proxy", 1);
   app.use(helmet());
   app.use(
     cors({
-      origin: "*",
-      credentials: false,
+      origin: env.CORS_ORIGINS,
+      credentials: true,
     }),
   );
   app.use(express.json());
