@@ -5,12 +5,14 @@ A production-ready API for accessing motivational quotes with user authenticatio
 ## Features
 
 - **User Authentication**: Email/password signup and login with JWT tokens
+- **RBAC (Role-Based Access Control)**: Admin and user roles with permission-based access
 - **API Key Management**: Generate and manage API keys from the dashboard
 - **Quotes CRUD**: Create, read, update, and delete quotes
 - **Public API**: Access quotes via API keys with rate limiting
 - **Rate Limiting**: Redis-backed rate limiting per IP and API key
 - **Caching**: Redis caching for improved performance
 - **Cursor-based Pagination**: Efficient pagination for large datasets
+- **CORS Security**: Configurable whitelist for allowed origins
 - **Docker Support**: Full containerization with docker-compose
 - **TypeScript**: Fully typed backend and frontend
 - **CI/CD**: GitHub Actions for automated testing and builds
@@ -65,6 +67,7 @@ PORT=3001
 DATABASE_URL=postgres://app:app@localhost:5432/quotes
 REDIS_URL=redis://localhost:6379
 JWT_SECRET=your-secret-key-change-in-production
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 ```
 
 **frontend/.env**:
@@ -124,6 +127,7 @@ Set these in your deployment environment (Railway, etc.):
 - `DATABASE_URL`: PostgreSQL connection string
 - `REDIS_URL`: Redis connection string
 - `JWT_SECRET`: Secret key for JWT signing
+- `CORS_ORIGINS`: Comma-separated list of allowed CORS origins (default: http://localhost:5173,http://localhost:3000)
 
 **Frontend**:
 - `VITE_API_BASE_URL`: Backend API URL
@@ -270,11 +274,12 @@ When rate limit is exceeded, you'll receive a `429` response:
 
 ## Security
 
+- **RBAC**: Role-based access control with admin and user roles
+- **CORS**: Whitelist-based CORS configuration for allowed origins
 - Passwords are hashed using bcrypt (12 rounds)
 - API keys are hashed (SHA-256) before storage
 - JWT tokens can be blacklisted (stored in Redis)
 - Helmet.js for HTTP security headers
-- CORS configured
 - Rate limiting to prevent abuse
 
 ## Testing

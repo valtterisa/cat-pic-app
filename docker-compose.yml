@@ -39,6 +39,7 @@ services:
       DATABASE_URL: postgres://app:app@db:5432/quotes
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
     ports:
       - "3001:3001"
     healthcheck:

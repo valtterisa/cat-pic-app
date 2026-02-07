@@ -1,6 +1,26 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Response, NextFunction } from "express";
-import { requireAdmin, type AuthenticatedRequest } from "./auth";
+import type { AuthenticatedRequest } from "./auth";
+
+// Mock the dependencies before importing
+vi.mock("../config/env", () => ({
+  loadEnv: () => ({
+    PORT: 3001,
+    DATABASE_URL: "postgres://test",
+    REDIS_URL: "redis://test",
+    JWT_SECRET: "test-secret",
+    CORS_ORIGINS: ["http://localhost:5173"],
+  }),
+}));
+
+vi.mock("../redis/client", () => ({
+  redisClient: {
+    get: vi.fn(),
+    set: vi.fn(),
+  },
+}));
+
+const { requireAdmin } = await import("./auth");
 
 describe("RBAC middleware", () => {
   let mockRequest: Partial<AuthenticatedRequest>;
