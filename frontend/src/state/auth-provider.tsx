@@ -1,18 +1,10 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { AuthContext } from "./auth-context";
 
 interface User {
   id: string;
   email: string;
 }
-
-interface AuthContextType {
-  user: User | null;
-  token: string | null;
-  setAuth: (user: User, token: string) => void;
-  clearAuth: () => void;
-}
-
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(() => {
@@ -41,11 +33,4 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       {children}
     </AuthContext.Provider>
   );
-};
-
-// eslint-disable-next-line react-refresh/only-export-components -- useAuth hook must be exported alongside AuthProvider for consumer convenience
-export const useAuth = () => {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
 };

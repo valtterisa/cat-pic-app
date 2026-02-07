@@ -1,5 +1,5 @@
 import { Link, Outlet, useNavigate } from "react-router-dom";
-import { useAuth } from "@/state/auth";
+import { useAuth } from "@/state/use-auth";
 import { Button } from "@/components/ui/button";
 
 export const DashboardLayout = () => {

@@ -1,4 +1,4 @@
-import { useAuth } from "@/state/auth";
+import { useAuth } from "@/state/use-auth";
 import {
   Card,
   CardContent,

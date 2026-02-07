@@ -61,5 +61,4 @@ function Button({
   )
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- buttonVariants utility must be exported alongside Button for external usage
-export { Button, buttonVariants }
+export { Button }
