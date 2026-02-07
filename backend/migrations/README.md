@@ -1,26 +1,23 @@
 # Database Migrations
 
-This directory contains SQL migration scripts for the database schema.
-
-## How to Run Migrations
-
-For existing databases that need to be updated:
-
-```bash
-# Connect to your database and run the migration
-psql $DATABASE_URL -f migrations/001_add_role_to_users.sql
-```
-
-Or use the following command with docker:
-```bash
-docker compose exec db psql -U app -d quotes -f /migrations/001_add_role_to_users.sql
-```
+This directory contains SQL migration scripts. **The backend runs all `*.sql` files in this folder on startup** (sorted by name), so you don't need to run them manually for normal startup.
 
 ## Migration Files
 
-- `001_add_role_to_users.sql` - Adds RBAC support by adding a role field to the users table (default: 'user')
+- `000_initial_schema.sql` - Creates `users`, `quotes`, and `api_keys` tables (safe to run repeatedly: uses `IF NOT EXISTS`).
+- `001_add_role_to_users.sql` - Adds RBAC `role` column to `users` (safe on existing DBs: uses `ADD COLUMN IF NOT EXISTS`).
 
-## Notes
+## Manual run (optional)
 
-- For new installations, the schema in `src/db/schema.ts` already includes all fields, so migrations are not needed.
-- Migrations are only needed when updating existing databases.
+If you need to run migrations yourself (e.g. different database):
+
+```bash
+psql $DATABASE_URL -f backend/migrations/000_initial_schema.sql
+psql $DATABASE_URL -f backend/migrations/001_add_role_to_users.sql
+```
+
+With Docker:
+
+```bash
+docker compose exec db psql -U app -d quotes -f - < backend/migrations/000_initial_schema.sql
+```

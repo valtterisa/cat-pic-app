@@ -5,7 +5,7 @@ import * as schema from "./schema";
 
 const env = loadEnv();
 
-const pool = new Pool({
+export const pool = new Pool({
   connectionString: env.DATABASE_URL,
 });
 

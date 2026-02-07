@@ -112,19 +112,28 @@ The app will be available at:
 
 ### Build and Run
 
+1. Copy env template and set **required** variables (no default passwords in compose):
+
+```bash
+cp .env.example .env
+# Edit .env: set POSTGRES_PASSWORD and JWT_SECRET (use strong values in production)
+```
+
+2. Start the stack:
+
 ```bash
 docker compose up --build
 ```
 
 This will start:
-- PostgreSQL on port 5432
-- Redis on port 6379
-- Backend API on port 3001
-- Frontend on port 3000
+- PostgreSQL (no host port by default; backend connects via internal network)
+- Redis on host port 6380 (or `REDIS_PORT` from .env)
+- Backend API on port 3001 (or `BACKEND_PORT`)
+- Frontend on port 3000 (or `FRONTEND_PORT`)
 
-### Environment Variables
+All compose env vars are documented in `.env.example`. Required: `POSTGRES_PASSWORD`, `JWT_SECRET`.
 
-Set these in your deployment environment (Railway, etc.):
+### Environment Variables (deployment / Railway etc.)
 
 **Backend**:
 - `PORT`: Server port (default: 3001)

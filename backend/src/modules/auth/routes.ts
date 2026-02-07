@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { Router } from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { db } from "../../db/drizzle";
 import { users } from "../../db/schema";

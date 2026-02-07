@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 describe("auth routes - password security", () => {
   it("should use bcrypt with 12 salt rounds", async () => {
