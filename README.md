@@ -80,10 +80,14 @@ VITE_API_BASE_URL=http://localhost:3001
 docker compose up -d
 ```
 
-5. Run database migrations (if using Drizzle migrations):
+5. Run database migrations (for existing databases):
 ```bash
-cd backend
-pnpm drizzle-kit migrate
+# If updating an existing database, run the migration
+psql $DATABASE_URL -f backend/migrations/001_add_role_to_users.sql
+
+# For new databases, the schema will be created automatically on first run
+# Or you can create it manually:
+psql $DATABASE_URL -f backend/migrations/001_add_role_to_users.sql
 ```
 
 6. Start development servers:
