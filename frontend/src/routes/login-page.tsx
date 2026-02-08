@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { useAuth } from "@/state/use-auth";
+import type { User } from "@/state/auth-context";
 import { apiCall } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,7 @@ export const LoginPage = () => {
 
   const login = useMutation({
     mutationFn: (body: { email: string; password: string }) =>
-      apiCall<{ user: { id: string; email: string }; token?: string }>(
+      apiCall<{ user: User; token?: string }>(
         "/auth/login",
         { method: "POST", body: JSON.stringify(body) },
       ),

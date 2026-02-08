@@ -109,7 +109,12 @@ export async function apiKeysRoutes(
       schema: {
         tags: ["API Keys"],
         params: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
-        response: { 200: { type: "object", properties: { success: { type: "boolean" } } }, 401: { type: "object", properties: { error: { type: "string" } } } },
+        response: {
+          200: { type: "object", properties: { success: { type: "boolean" } } },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
       },
     },
     async (request, reply) => {

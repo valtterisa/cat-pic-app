@@ -13,6 +13,7 @@ export interface AuthUser {
 
 interface TokenPayload extends AuthUser {
   jti: string;
+  exp?: number;
 }
 
 export const signAccessToken = (user: AuthUser): string => {
