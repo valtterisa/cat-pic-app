@@ -6,6 +6,7 @@ export interface Env {
   REDIS_URL: string;
   JWT_SECRET: string;
   CORS_ORIGINS: string[];
+  KAFKA_BROKERS?: string;
 }
 
 export const loadEnv = (): Env => {
@@ -17,6 +18,7 @@ export const loadEnv = (): Env => {
     REDIS_URL = "redis://localhost:6379",
     JWT_SECRET,
     CORS_ORIGINS = "http://localhost:5173,http://localhost:3000",
+    KAFKA_BROKERS,
   } = process.env;
 
   if (!DATABASE_URL) {
@@ -34,6 +36,7 @@ export const loadEnv = (): Env => {
     REDIS_URL,
     JWT_SECRET,
     CORS_ORIGINS: CORS_ORIGINS.split(",").map((origin) => origin.trim()),
+    KAFKA_BROKERS: KAFKA_BROKERS ?? undefined,
   };
 };
 

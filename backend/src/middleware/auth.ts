@@ -68,6 +68,30 @@ export const requireAuth = async (
   }
 };
 
+export const optionalAuth = async (
+  request: FastifyRequest,
+  _reply: FastifyReply,
+) => {
+  const cookies = request.cookies ?? {};
+  let token = (cookies as { access_token?: string }).access_token;
+  if (!token) {
+    const header = request.headers.authorization;
+    if (header?.startsWith("Bearer ")) {
+      token = header.slice("Bearer ".length);
+    }
+  }
+  if (!token) return;
+  try {
+    const decoded = jwt.verify(token, env.JWT_SECRET) as TokenPayload;
+    if (decoded.jti && (await isTokenBlacklisted(decoded.jti))) return;
+    request.user = { id: decoded.id, email: decoded.email, role: decoded.role };
+    request.jti = decoded.jti;
+    request.tokenExp = typeof decoded.exp === "number" ? decoded.exp : undefined;
+  } catch {
+    // ignore invalid token
+  }
+};
+
 export const requireAdmin = async (
   request: FastifyRequest,
   reply: FastifyReply,

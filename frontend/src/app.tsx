@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/state/auth-provider";
-import { LandingPage } from "@/routes/landing-page";
 import { LoginPage } from "@/routes/login-page";
 import { SignupPage } from "@/routes/signup-page";
 import { ProtectedRoute } from "@/routes/protected-route";
@@ -10,6 +9,7 @@ import { DashboardHome } from "@/routes/dashboard-home";
 import { QuotesPage } from "@/routes/quotes-page";
 import { ApiKeysPage } from "@/routes/api-keys-page";
 import { ApiDocsPage } from "@/routes/api-docs-page";
+import { FeedPage } from "@/routes/feed-page";
 
 const queryClient = new QueryClient();
 
@@ -19,7 +19,7 @@ const App = () => {
       <AuthProvider>
         <BrowserRouter>
         <Routes>
-          <Route path="/" element={<LandingPage />} />
+          <Route path="/" element={<FeedPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
           <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>

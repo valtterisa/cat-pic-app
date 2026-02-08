@@ -30,4 +30,5 @@ export const queryKeys = {
     quotes: () => ["dashboard", "quotes"] as const,
     apiKeys: () => ["dashboard", "api-keys"] as const,
   },
+  feed: (sort?: string) => ["feed", sort ?? "newest"] as const,
 } as const;

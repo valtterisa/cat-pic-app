@@ -26,6 +26,30 @@ export const quotes = pgTable("quotes", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
+export const savedQuotes = pgTable("saved_quotes", {
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  quoteId: uuid("quote_id")
+    .notNull()
+    .references(() => quotes.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+}, (t) => [{ primaryKey: { columns: [t.userId, t.quoteId] } }]);
+
+export const quoteLikes = pgTable("quote_likes", {
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  quoteId: uuid("quote_id")
+    .notNull()
+    .references(() => quotes.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+}, (t) => [{ primaryKey: { columns: [t.userId, t.quoteId] } }]);
+
 export const apiKeys = pgTable("api_keys", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
