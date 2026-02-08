@@ -4,6 +4,7 @@ import { AuthProvider } from "@/state/auth-provider";
 import { LandingPage } from "@/routes/landing-page";
 import { LoginPage } from "@/routes/login-page";
 import { SignupPage } from "@/routes/signup-page";
+import { ProtectedRoute } from "@/routes/protected-route";
 import { DashboardLayout } from "@/routes/dashboard-layout";
 import { DashboardHome } from "@/routes/dashboard-home";
 import { QuotesPage } from "@/routes/quotes-page";
@@ -21,7 +22,7 @@ const App = () => {
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
-          <Route path="/dashboard" element={<DashboardLayout />}>
+          <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
             <Route index element={<DashboardHome />} />
             <Route path="quotes" element={<QuotesPage />} />
             <Route path="api-keys" element={<ApiKeysPage />} />

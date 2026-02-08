@@ -5,19 +5,24 @@ import { quotes } from "../../db/schema";
 import { redisClient } from "../../redis/client";
 import { requireAuth } from "../../middleware/auth";
 import { requireApiKey } from "../../middleware/api-key";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 const RANDOM_QUOTE_CACHE_KEY = "quotes:random";
 const RANDOM_QUOTE_CACHE_TTL_SEC = 60;
+const BY_AUTHOR_CACHE_TTL_SEC = 300;
+const BY_AUTHOR_CACHE_PREFIX = "quotes:by_author:";
 
 const createQuoteSchema = z.object({
-  text: z.string().min(1),
-  author: z.string().optional(),
+  text: z.string().min(1).max(10_000),
+  author: z.string().max(500).optional(),
 });
 
 const updateQuoteSchema = createQuoteSchema.partial();
 
+const uuidParamSchema = z.string().uuid();
+
 const listQuerySchema = z.object({
+  author: z.string().min(1).max(500).transform((s) => s.trim()).optional(),
   cursor: z.string().uuid().optional(),
   limit: z
     .string()
@@ -90,6 +95,7 @@ export async function quotesRoutes(
   fastify.get("/feed", {
     schema: {
       tags: ["Quotes"],
+      description: "Public feed; no API key required. Intentionally unauthenticated.",
       querystring: {
         type: "object",
         properties: { cursor: { type: "string", format: "uuid" }, limit: { type: "integer", minimum: 1, maximum: 100 } },
@@ -142,10 +148,29 @@ export async function quotesRoutes(
       preHandler: [requireApiKey],
       schema: {
         tags: ["Quotes"],
-        description: "Requires X-API-Key header",
+        description: "List quotes with optional author filter. When author is set, responses are cached in Redis (5 min). On cache miss, data is read from the read-only Postgres replica.",
         querystring: {
           type: "object",
-          properties: { cursor: { type: "string", format: "uuid" }, limit: { type: "integer", minimum: 1, maximum: 100 } },
+          properties: {
+            author: {
+              type: "string",
+              minLength: 1,
+              maxLength: 500,
+              description: "Filter by author (case-insensitive). When provided, result is cached.",
+            },
+            cursor: {
+              type: "string",
+              format: "uuid",
+              description: "Pagination cursor from previous response nextCursor.",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20,
+              description: "Page size (1–100). Sent as query string, e.g. limit=20.",
+            },
+          },
         },
         response: {
           200: {
@@ -156,6 +181,7 @@ export async function quotesRoutes(
             },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -164,30 +190,74 @@ export async function quotesRoutes(
       if (!parsed.success) {
         return reply.code(400).send({ error: "invalid_query" });
       }
-      const { cursor, limit } = parsed.data;
+      const { author, cursor, limit } = parsed.data;
       const pageSize = limit ?? 20;
+
+      if (author != null && redisClient.isOpen) {
+        const cacheKey = `${BY_AUTHOR_CACHE_PREFIX}${encodeURIComponent(author)}:${cursor ?? ""}:${pageSize}`;
+        try {
+          const cached = await redisClient.get(cacheKey);
+          if (cached) {
+            return reply.send(JSON.parse(cached) as { items: unknown[]; nextCursor: string | null });
+          }
+        } catch {
+          // fall through to read replica
+        }
+      }
+
+      const authorCondition = author != null ? sql`lower(${quotes.author}) = lower(${author})` : undefined;
 
       let rows;
       if (cursor) {
-        rows = await dbRead
-          .select()
-          .from(quotes)
-          .where(lt(quotes.id, cursor))
-          .orderBy(desc(quotes.createdAt), desc(quotes.id))
-          .limit(pageSize + 1);
+        rows = authorCondition
+          ? await dbRead
+              .select()
+              .from(quotes)
+              .where(and(authorCondition, lt(quotes.id, cursor)))
+              .orderBy(desc(quotes.createdAt), desc(quotes.id))
+              .limit(pageSize + 1)
+          : await dbRead
+              .select()
+              .from(quotes)
+              .where(lt(quotes.id, cursor))
+              .orderBy(desc(quotes.createdAt), desc(quotes.id))
+              .limit(pageSize + 1);
       } else {
-        rows = await dbRead
-          .select()
-          .from(quotes)
-          .orderBy(desc(quotes.createdAt), desc(quotes.id))
-          .limit(pageSize + 1);
+        rows = authorCondition
+          ? await dbRead
+              .select()
+              .from(quotes)
+              .where(authorCondition)
+              .orderBy(desc(quotes.createdAt), desc(quotes.id))
+              .limit(pageSize + 1)
+          : await dbRead
+              .select()
+              .from(quotes)
+              .orderBy(desc(quotes.createdAt), desc(quotes.id))
+              .limit(pageSize + 1);
       }
 
       const hasNext = rows.length > pageSize;
       const items = hasNext ? rows.slice(0, pageSize) : rows;
       const nextCursor = hasNext ? items[items.length - 1]?.id ?? null : null;
+      const payload = { items, nextCursor };
 
-      return reply.send({ items, nextCursor });
+      if (author != null && redisClient.isOpen) {
+        const cacheKey = `${BY_AUTHOR_CACHE_PREFIX}${encodeURIComponent(author)}:${cursor ?? ""}:${pageSize}`;
+        try {
+          await redisClient.set(cacheKey, JSON.stringify(payload), {
+            EX: BY_AUTHOR_CACHE_TTL_SEC,
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      if (author != null && items.length === 0) {
+        return reply.code(404).send({ error: "no_quotes_for_author" });
+      }
+
+      return reply.send(payload);
     },
   );
 
@@ -281,7 +351,8 @@ export async function quotesRoutes(
 
       const rawId = (request.params as { id?: string }).id;
       const id = typeof rawId === "string" ? rawId : rawId?.[0];
-      if (!id) {
+      const idResult = uuidParamSchema.safeParse(id);
+      if (!idResult.success) {
         return reply.code(400).send({ error: "invalid_id" });
       }
       const parsed = updateQuoteSchema.safeParse(request.body);
@@ -294,7 +365,7 @@ export async function quotesRoutes(
         .set(parsed.data)
         .where(
           and(
-            eq(quotes.id, id),
+            eq(quotes.id, idResult.data),
             eq(quotes.createdBy, request.user.id),
           ),
         )
@@ -330,7 +401,8 @@ export async function quotesRoutes(
 
       const rawId = (request.params as { id?: string }).id;
       const id = typeof rawId === "string" ? rawId : rawId?.[0];
-      if (!id) {
+      const idResult = uuidParamSchema.safeParse(id);
+      if (!idResult.success) {
         return reply.code(400).send({ error: "invalid_id" });
       }
 
@@ -338,7 +410,7 @@ export async function quotesRoutes(
         .delete(quotes)
         .where(
           and(
-            eq(quotes.id, id),
+            eq(quotes.id, idResult.data),
             eq(quotes.createdBy, request.user.id),
           ),
         )

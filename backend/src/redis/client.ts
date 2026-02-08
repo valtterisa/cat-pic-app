@@ -8,14 +8,8 @@ export const redisClient = createClient({
 });
 
 redisClient.on("error", (err) => {
-  // eslint-disable-next-line no-console
-  console.error("Redis error", err);
+  if (typeof process !== "undefined" && process.env.NODE_ENV !== "test") {
+    console.error("Redis error", err);
+  }
 });
-
-if (!redisClient.isOpen) {
-  redisClient.connect().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error("Failed to connect to Redis", err);
-  });
-}
 

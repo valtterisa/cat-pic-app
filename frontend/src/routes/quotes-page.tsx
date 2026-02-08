@@ -30,7 +30,7 @@ export const QuotesPage = () => {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: queryKeys.dashboard.quotes(),
     queryFn: () =>
-      apiCall<{ items: Quote[] }>("/dashboard/quotes"),
+      apiCall<{ items: Quote[] }>("/api/v1/dashboard/quotes"),
     enabled: !!user,
   });
 

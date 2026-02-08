@@ -60,6 +60,8 @@ export const requireAuth = async (
     }
 
     request.user = { id: decoded.id, email: decoded.email, role: decoded.role };
+    request.jti = decoded.jti;
+    request.tokenExp = typeof decoded.exp === "number" ? decoded.exp : undefined;
   } catch {
     return reply.code(401).send({ error: "invalid_token" });
   }

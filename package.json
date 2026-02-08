@@ -1,5 +1,5 @@
 {
-  "name": "cat-pic-app-monorepo",
+  "name": "motivational-quotes",
   "private": true,
   "packageManager": "pnpm@10.17.1",
   "scripts": {

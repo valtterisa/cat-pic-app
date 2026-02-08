@@ -5,7 +5,10 @@ export const errorHandler = (
   _request: FastifyRequest,
   reply: FastifyReply,
 ) => {
-  // eslint-disable-next-line no-console
-  console.error("Error:", err);
+  if (process.env.NODE_ENV !== "production") {
+    console.error("Error:", err);
+  } else {
+    console.error("Error:", err?.message ?? "internal_server_error");
+  }
   reply.code(500).send({ error: "internal_server_error" });
 };

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { useAuth } from "@/state/use-auth";
-import { apiCall, setStoredToken } from "@/lib/api";
+import { apiCall } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,7 +29,6 @@ export const LoginPage = () => {
         { method: "POST", body: JSON.stringify(body) },
       ),
     onSuccess: (data) => {
-      if (data.token) setStoredToken(data.token);
       setAuth(data.user);
       navigate("/dashboard");
     },

@@ -43,7 +43,7 @@ export const ApiKeysPage = () => {
 
   const createKey = useMutation({
     mutationFn: (label: string) =>
-      apiCall<{ token: string }>("/dashboard/api-keys", {
+      apiCall<{ key: { id: string; label: string; createdAt: string }; token: string }>("/dashboard/api-keys", {
         method: "POST",
         body: JSON.stringify({ label }),
       }),

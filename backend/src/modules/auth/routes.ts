@@ -3,12 +3,12 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { db } from "../../db/drizzle";
 import { users } from "../../db/schema";
-import { signAccessToken, requireAuth } from "../../middleware/auth";
+import { signAccessToken, requireAuth, blacklistToken } from "../../middleware/auth";
 import { eq } from "drizzle-orm";
 
 const authSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email().max(320),
+  password: z.string().min(8).max(128),
 });
 
 const COOKIE_MAX_AGE = 60 * 60;
@@ -169,6 +169,16 @@ export async function authRoutes(
       schema: { tags: ["Auth"], response: { 200: { type: "object", properties: { success: { type: "boolean" } } } } },
     },
     async (request, reply) => {
+      if (request.jti != null && request.tokenExp != null) {
+        const ttlSeconds = Math.max(1, request.tokenExp - Math.floor(Date.now() / 1000));
+        try {
+          await blacklistToken(request.jti, ttlSeconds);
+        } catch {
+          if (typeof process !== "undefined" && process.env.NODE_ENV !== "test") {
+            console.warn("Logout: could not blacklist token (Redis unavailable)");
+          }
+        }
+      }
       reply.clearCookie("access_token", {
         path: COOKIE_OPTIONS.path,
         httpOnly: COOKIE_OPTIONS.httpOnly,

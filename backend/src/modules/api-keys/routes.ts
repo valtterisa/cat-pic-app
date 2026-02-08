@@ -7,8 +7,10 @@ import { generateApiKey } from "../../middleware/api-key";
 import { and, eq } from "drizzle-orm";
 
 const createSchema = z.object({
-  label: z.string().min(1),
+  label: z.string().min(1).max(255),
 });
+
+const uuidParamSchema = z.string().uuid();
 
 export async function apiKeysRoutes(
   fastify: FastifyInstance,
@@ -117,14 +119,20 @@ export async function apiKeysRoutes(
 
       const rawId = (request.params as { id?: string }).id;
       const id = typeof rawId === "string" ? rawId : rawId?.[0];
-      if (!id) {
+      const idResult = uuidParamSchema.safeParse(id);
+      if (!idResult.success) {
         return reply.code(400).send({ error: "invalid_id" });
       }
 
-      await db
+      const updated = await db
         .update(apiKeys)
         .set({ revokedAt: new Date() })
-        .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, request.user.id)));
+        .where(and(eq(apiKeys.id, idResult.data), eq(apiKeys.userId, request.user.id)))
+        .returning();
+
+      if (updated.length === 0) {
+        return reply.code(404).send({ error: "not_found" });
+      }
 
       return reply.send({ success: true });
     },
