@@ -33,6 +33,12 @@ export const DashboardLayout = () => {
         <Link to="/dashboard/quotes" onClick={() => setSidebarOpen(false)}>Quotes</Link>
       </Button>
       <Button variant="ghost" asChild className="justify-start min-h-[44px]">
+        <Link to="/dashboard/liked" onClick={() => setSidebarOpen(false)}>Liked</Link>
+      </Button>
+      <Button variant="ghost" asChild className="justify-start min-h-[44px]">
+        <Link to="/dashboard/saved" onClick={() => setSidebarOpen(false)}>Saved</Link>
+      </Button>
+      <Button variant="ghost" asChild className="justify-start min-h-[44px]">
         <Link to="/dashboard/api-keys" onClick={() => setSidebarOpen(false)}>API keys</Link>
       </Button>
       <Button variant="ghost" asChild className="justify-start min-h-[44px]">

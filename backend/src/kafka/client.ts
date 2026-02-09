@@ -1,4 +1,4 @@
-import { Kafka, type Producer } from "kafkajs";
+import { Kafka, Partitioners, type Producer } from "kafkajs";
 import { loadEnv } from "../config/env";
 
 const env = loadEnv();
@@ -12,7 +12,9 @@ async function getProducer(): Promise<Producer | null> {
     clientId: "motivational-quotes-api",
     brokers: env.KAFKA_BROKERS.split(",").map((b) => b.trim()),
   });
-  producer = kafka.producer();
+  producer = kafka.producer({
+    createPartitioner: Partitioners.DefaultPartitioner,
+  });
   await producer.connect();
   return producer;
 }

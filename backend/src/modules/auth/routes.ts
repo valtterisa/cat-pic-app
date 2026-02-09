@@ -11,12 +11,12 @@ const authSchema = z.object({
   password: z.string().min(8).max(128),
 });
 
-const COOKIE_MAX_AGE = 60 * 60;
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  sameSite: "none" as const,
   path: "/",
   maxAge: COOKIE_MAX_AGE,
 };

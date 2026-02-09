@@ -38,14 +38,14 @@ const listQuerySchema = z.object({
 const feedQuerySchema = z.object({
   cursor: z.string().uuid().optional(),
   limit: z
-    .string()
-    .transform((v) => Number(v))
+    .union([z.string(), z.number()])
+    .transform((v) => (typeof v === "string" ? Number(v) : v))
     .refine((n) => Number.isFinite(n) && n > 0 && n <= 100)
     .optional(),
   sort: z.enum(["newest", "popular"]).optional(),
   offset: z
-    .string()
-    .transform((v) => Number(v))
+    .union([z.string(), z.number()])
+    .transform((v) => (typeof v === "string" ? Number(v) : v))
     .refine((n) => Number.isInteger(n) && n >= 0)
     .optional(),
 });
@@ -130,9 +130,9 @@ export async function quotesRoutes(
         type: "object",
         properties: {
           cursor: { type: "string", format: "uuid" },
-          limit: { type: "integer", minimum: 1, maximum: 100 },
+          limit: { type: "string" },
           sort: { type: "string", enum: ["newest", "popular"] },
-          offset: { type: "integer", minimum: 0 },
+          offset: { type: "string" },
         },
       },
       response: {
@@ -163,11 +163,14 @@ export async function quotesRoutes(
 
     if (sort === "popular") {
       const off = offset ?? 0;
-      const subquery = dbRead
-        .select({ quoteId: quoteLikes.quoteId, c: sql<number>`count(*)::int` })
+      const likeCountSubquery = dbRead
+        .select({
+          quoteId: quoteLikes.quoteId,
+          likeCount: sql<number>`count(*)::int`.as("like_count"),
+        })
         .from(quoteLikes)
         .groupBy(quoteLikes.quoteId)
-        .as("likes");
+        .as("like_counts");
       rows = await dbRead
         .select({
           id: quotes.id,
@@ -178,8 +181,12 @@ export async function quotesRoutes(
           updatedAt: quotes.updatedAt,
         })
         .from(quotes)
-        .leftJoin(subquery, eq(quotes.id, subquery.quoteId))
-        .orderBy(desc(sql`coalesce(${subquery.c}, 0)`), desc(quotes.createdAt), desc(quotes.id))
+        .leftJoin(likeCountSubquery, eq(quotes.id, likeCountSubquery.quoteId))
+        .orderBy(
+          desc(sql`coalesce(like_counts.like_count, 0)`),
+          desc(quotes.createdAt),
+          desc(quotes.id),
+        )
         .limit(pageSize + 1)
         .offset(off);
       const hasNext = rows.length > pageSize;
@@ -551,6 +558,218 @@ export async function quotesRoutes(
         .where(eq(quotes.createdBy, request.user.id));
 
       return reply.send({ items: rows });
+    },
+  );
+
+  fastify.get(
+    "/dashboard/liked",
+    {
+      preHandler: [requireAuth],
+      schema: {
+        tags: ["Quotes"],
+        response: {
+          200: { type: "object", properties: { items: { type: "array", items: feedItemSchema } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+
+      const userId = request.user.id;
+      const likedQuoteIds: string[] = [];
+      let redisSuccess = false;
+
+      if (redisClient.isOpen) {
+        try {
+          const members = await redisClient.sMembers(`${REDIS_USER_LIKES_PREFIX}${userId}`);
+          likedQuoteIds.push(...members);
+          redisSuccess = true;
+        } catch {
+        }
+      }
+
+      if (!redisSuccess) {
+        const dbLikedRows = await dbRead
+          .select({ quoteId: quoteLikes.quoteId })
+          .from(quoteLikes)
+          .where(eq(quoteLikes.userId, userId));
+        likedQuoteIds.push(...dbLikedRows.map((r) => r.quoteId));
+      }
+
+      if (likedQuoteIds.length === 0) {
+        return reply.send({ items: [] });
+      }
+
+      const rows = await dbRead
+        .select()
+        .from(quotes)
+        .where(inArray(quotes.id, likedQuoteIds))
+        .orderBy(desc(quotes.createdAt));
+
+      const quoteIds = rows.map((r) => r.id);
+      const likeCounts: Record<string, number> = {};
+      const likedSet = new Set<string>(quoteIds);
+
+      if (redisClient.isOpen) {
+        try {
+          const countKeys = quoteIds.map((id) => `${REDIS_LIKE_COUNT_PREFIX}${id}`);
+          const countVals = await redisClient.mGet(countKeys);
+          quoteIds.forEach((id, i) => {
+            const v = countVals[i];
+            likeCounts[id] = v != null ? parseInt(v, 10) : 0;
+            if (Number.isNaN(likeCounts[id])) likeCounts[id] = 0;
+          });
+        } catch {
+        }
+      }
+
+      if (!redisClient.isOpen || Object.keys(likeCounts).length === 0) {
+        const likeCountRows = await dbRead
+          .select({ quoteId: quoteLikes.quoteId, c: sql<number>`count(*)::int` })
+          .from(quoteLikes)
+          .where(inArray(quoteLikes.quoteId, quoteIds))
+          .groupBy(quoteLikes.quoteId);
+        for (const r of likeCountRows) {
+          likeCounts[r.quoteId] = r.c;
+        }
+      }
+
+      const savedSet = new Set<string>();
+      if (redisClient.isOpen) {
+        try {
+          for (const qid of quoteIds) {
+            const saved = await redisClient.sIsMember(`${REDIS_USER_SAVES_PREFIX}${userId}`, qid);
+            if (saved) savedSet.add(qid);
+          }
+        } catch {
+        }
+      } else {
+        const savedRows = await dbRead
+          .select({ quoteId: savedQuotes.quoteId })
+          .from(savedQuotes)
+          .where(eq(savedQuotes.userId, userId));
+        for (const r of savedRows) {
+          if (quoteIds.includes(r.quoteId)) savedSet.add(r.quoteId);
+        }
+      }
+
+      const items = rows.map((q) => ({
+        ...q,
+        likeCount: likeCounts[q.id] ?? 0,
+        liked: true,
+        saved: savedSet.has(q.id),
+      }));
+
+      return reply.send({ items });
+    },
+  );
+
+  fastify.get(
+    "/dashboard/saved",
+    {
+      preHandler: [requireAuth],
+      schema: {
+        tags: ["Quotes"],
+        response: {
+          200: { type: "object", properties: { items: { type: "array", items: feedItemSchema } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+
+      const userId = request.user.id;
+      const savedQuoteIds: string[] = [];
+      let redisSuccess = false;
+
+      if (redisClient.isOpen) {
+        try {
+          const members = await redisClient.sMembers(`${REDIS_USER_SAVES_PREFIX}${userId}`);
+          savedQuoteIds.push(...members);
+          redisSuccess = true;
+        } catch {
+        }
+      }
+
+      if (!redisSuccess) {
+        const dbSavedRows = await dbRead
+          .select({ quoteId: savedQuotes.quoteId })
+          .from(savedQuotes)
+          .where(eq(savedQuotes.userId, userId));
+        savedQuoteIds.push(...dbSavedRows.map((r) => r.quoteId));
+      }
+
+      if (savedQuoteIds.length === 0) {
+        return reply.send({ items: [] });
+      }
+
+      const rows = await dbRead
+        .select()
+        .from(quotes)
+        .where(inArray(quotes.id, savedQuoteIds))
+        .orderBy(desc(quotes.createdAt));
+
+      const quoteIds = rows.map((r) => r.id);
+      const likeCounts: Record<string, number> = {};
+      const savedSet = new Set<string>(quoteIds);
+
+      if (redisClient.isOpen) {
+        try {
+          const countKeys = quoteIds.map((id) => `${REDIS_LIKE_COUNT_PREFIX}${id}`);
+          const countVals = await redisClient.mGet(countKeys);
+          quoteIds.forEach((id, i) => {
+            const v = countVals[i];
+            likeCounts[id] = v != null ? parseInt(v, 10) : 0;
+            if (Number.isNaN(likeCounts[id])) likeCounts[id] = 0;
+          });
+        } catch {
+        }
+      }
+
+      if (!redisClient.isOpen || Object.keys(likeCounts).length === 0) {
+        const likeCountRows = await dbRead
+          .select({ quoteId: quoteLikes.quoteId, c: sql<number>`count(*)::int` })
+          .from(quoteLikes)
+          .where(inArray(quoteLikes.quoteId, quoteIds))
+          .groupBy(quoteLikes.quoteId);
+        for (const r of likeCountRows) {
+          likeCounts[r.quoteId] = r.c;
+        }
+      }
+
+      const likedSet = new Set<string>();
+      if (redisClient.isOpen) {
+        try {
+          for (const qid of quoteIds) {
+            const liked = await redisClient.sIsMember(`${REDIS_USER_LIKES_PREFIX}${userId}`, qid);
+            if (liked) likedSet.add(qid);
+          }
+        } catch {
+        }
+      } else {
+        const likedRows = await dbRead
+          .select({ quoteId: quoteLikes.quoteId })
+          .from(quoteLikes)
+          .where(eq(quoteLikes.userId, userId));
+        for (const r of likedRows) {
+          if (quoteIds.includes(r.quoteId)) likedSet.add(r.quoteId);
+        }
+      }
+
+      const items = rows.map((q) => ({
+        ...q,
+        likeCount: likeCounts[q.id] ?? 0,
+        liked: likedSet.has(q.id),
+        saved: true,
+      }));
+
+      return reply.send({ items });
     },
   );
 

@@ -29,6 +29,8 @@ export const queryKeys = {
   dashboard: {
     quotes: () => ["dashboard", "quotes"] as const,
     apiKeys: () => ["dashboard", "api-keys"] as const,
+    liked: () => ["dashboard", "liked"] as const,
+    saved: () => ["dashboard", "saved"] as const,
   },
   feed: (sort?: string) => ["feed", sort ?? "newest"] as const,
 } as const;
