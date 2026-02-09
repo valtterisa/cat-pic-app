@@ -55,6 +55,6 @@ export const authRateLimit = createRateLimiter(
     if (email && typeof email === "string") {
       return `email:${email.toLowerCase().trim()}`;
     }
-    return "unknown";
+    return "";
   },
 );

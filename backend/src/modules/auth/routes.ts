@@ -14,10 +14,12 @@ const authSchema = z.object({
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "none" as const,
+  secure: isProduction,
+  sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
   path: "/",
   maxAge: COOKIE_MAX_AGE,
 };

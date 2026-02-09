@@ -1,6 +1,21 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
 
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(status: number, code: string, message?: string) {
+    super(message ?? code);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 let csrfToken: string | null = null;
+
+export const setCsrfToken = (token: string | null): void => {
+  csrfToken = token;
+};
 
 export const getCsrfToken = async (): Promise<string | null> => {
   if (csrfToken) return csrfToken;
@@ -42,14 +57,19 @@ export const apiCall = async <T = unknown>(
     credentials: "include",
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "unknown_error" }));
-    
-    if (res.status === 403 && err.error === "invalid_csrf_token" && !_isRetry) {
+    const body = await res.json().catch(() => ({ error: "unknown_error" }));
+    const code = (body && typeof body.error === "string" && body.error) || "request_failed";
+
+    if (
+      res.status === 403 &&
+      (code === "invalid_csrf_token" || code === "missing_csrf_token") &&
+      !_isRetry
+    ) {
       csrfToken = null;
       return apiCall<T>(path, { ...options, _isRetry: true });
     }
-    
-    throw new Error(err.error || "request_failed");
+
+    throw new ApiError(res.status, code, code);
   }
   
   if (res.status === 204 || res.headers.get("content-length") === "0") {
@@ -60,6 +80,10 @@ export const apiCall = async <T = unknown>(
 };
 
 export const queryKeys = {
+  auth: {
+    me: () => ["auth", "me"] as const,
+    csrfToken: () => ["auth", "csrf-token"] as const,
+  },
   dashboard: {
     quotes: () => ["dashboard", "quotes"] as const,
     apiKeys: () => ["dashboard", "api-keys"] as const,

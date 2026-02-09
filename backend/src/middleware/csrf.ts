@@ -29,7 +29,7 @@ export const generateCsrfTokenCookie = async (
   reply.setCookie(CSRF_TOKEN_COOKIE_NAME, token, {
     httpOnly: true,
     secure: isProduction,
-    sameSite: "none",
+    sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
     path: "/",
     maxAge: CSRF_TOKEN_TTL_SEC,
   });
@@ -85,6 +85,15 @@ export const requireCsrf = async (
     return;
   }
 
+  const cookies = request.cookies ?? {};
+  const cookieToken = (cookies as { [CSRF_TOKEN_COOKIE_NAME]?: string })[CSRF_TOKEN_COOKIE_NAME];
+  const headerToken = request.headers[CSRF_TOKEN_HEADER_NAME] as string | undefined;
+  if (!headerToken) {
+    return reply.code(403).send({ error: "missing_csrf_token" });
+  }
+  if (!cookieToken) {
+    return reply.code(403).send({ error: "missing_csrf_token" });
+  }
   const isValid = await validateCsrfToken(request, reply);
   if (!isValid) {
     return reply.code(403).send({ error: "invalid_csrf_token" });
