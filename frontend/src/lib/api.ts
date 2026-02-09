@@ -15,9 +15,9 @@ export const getCsrfToken = async (): Promise<string | null> => {
 
 export const apiCall = async <T = unknown>(
   path: string,
-  options?: RequestInit & { token?: string },
+  options?: RequestInit & { token?: string; _isRetry?: boolean },
 ): Promise<T> => {
-  const { token, ...rest } = options || {};
+  const { token, _isRetry, ...rest } = options || {};
   const method = rest.method?.toUpperCase() || "GET";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -43,8 +43,19 @@ export const apiCall = async <T = unknown>(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "unknown_error" }));
+    
+    if (res.status === 403 && err.error === "invalid_csrf_token" && !_isRetry) {
+      csrfToken = null;
+      return apiCall<T>(path, { ...options, _isRetry: true });
+    }
+    
     throw new Error(err.error || "request_failed");
   }
+  
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return null as T;
+  }
+  
   return res.json() as Promise<T>;
 };
 
