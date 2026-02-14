@@ -1,13 +1,10 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { z } from "zod";
-import { db, dbRead } from "../../db/drizzle";
-import { quotes, quoteLikes, savedQuotes } from "../../db/schema";
 import { redisClient } from "../../redis/client";
 import { requireAuth, optionalAuth } from "../../middleware/auth";
 import { requireApiKey } from "../../middleware/api-key";
 import { requireCsrf } from "../../middleware/csrf";
-import { produceQuoteLikeEvent, produceQuoteSaveEvent } from "../../kafka/client";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import * as content from "../../store/content";
 
 const RANDOM_QUOTE_CACHE_KEY = "quotes:random";
 const RANDOM_QUOTE_CACHE_TTL_SEC = 60;
@@ -67,51 +64,6 @@ export async function quotesRoutes(
     },
   };
 
-  fastify.get(
-    "/quotes/random",
-    {
-      preHandler: [requireApiKey],
-      schema: {
-        tags: ["Quotes"],
-        description: "Requires X-API-Key header",
-        response: { 200: quoteSchema, 404: { type: "object", properties: { error: { type: "string" } } } },
-      },
-    },
-    async (_request, reply) => {
-      if (redisClient.isOpen) {
-        try {
-          const cached = await redisClient.get(RANDOM_QUOTE_CACHE_KEY);
-          if (cached) {
-            return reply.send(JSON.parse(cached) as unknown);
-          }
-        } catch {
-          // ignore cache errors, fall through to DB
-        }
-      }
-
-      const allRows = await dbRead.select().from(quotes);
-      if (allRows.length === 0) {
-        return reply.code(404).send({ error: "no_quotes" });
-      }
-      const randomIndex = Math.floor(Math.random() * allRows.length);
-      const quote = allRows[randomIndex];
-
-      if (redisClient.isOpen) {
-        try {
-          await redisClient.set(
-            RANDOM_QUOTE_CACHE_KEY,
-            JSON.stringify(quote),
-            { EX: RANDOM_QUOTE_CACHE_TTL_SEC },
-          );
-        } catch {
-          // ignore
-        }
-      }
-
-      return reply.send(quote);
-    },
-  );
-
   const feedItemSchema = {
     ...quoteSchema,
     properties: {
@@ -122,10 +74,85 @@ export async function quotesRoutes(
     },
   };
 
+  fastify.get("/quotes/random", {
+    preHandler: [requireApiKey],
+    schema: {
+      tags: ["Public"],
+      description: "Random quote. X-API-Key required. For use in your own app/site.",
+      response: { 200: quoteSchema, 404: { type: "object", properties: { error: { type: "string" } } } },
+    },
+  }, async (_request, reply) => {
+    if (redisClient.isOpen) {
+      try {
+        const cached = await redisClient.get(RANDOM_QUOTE_CACHE_KEY);
+        if (cached) return reply.send(JSON.parse(cached) as unknown);
+      } catch {
+        // ignore
+      }
+    }
+    const quote = await content.getRandomQuote();
+    if (!quote) return reply.code(404).send({ error: "no_quotes" });
+    if (redisClient.isOpen) {
+      try {
+        await redisClient.set(RANDOM_QUOTE_CACHE_KEY, JSON.stringify(quote), { EX: RANDOM_QUOTE_CACHE_TTL_SEC });
+      } catch {
+        // ignore
+      }
+    }
+    return reply.send(quote);
+  });
+
+  fastify.get("/quotes", {
+    preHandler: [requireApiKey],
+    schema: {
+      tags: ["Public"],
+      description: "List quotes (author/cursor/limit). X-API-Key required. For use in your own app/site.",
+      querystring: {
+        type: "object",
+        properties: {
+          author: { type: "string", minLength: 1, maxLength: 500 },
+          cursor: { type: "string", format: "uuid" },
+          limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      },
+      response: {
+        200: { type: "object", properties: { items: { type: "array", items: quoteSchema }, nextCursor: { type: ["string", "null"] } } },
+        400: { type: "object", properties: { error: { type: "string" } } },
+        404: { type: "object", properties: { error: { type: "string" } } },
+      },
+    },
+  }, async (request, reply) => {
+    const parsed = listQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
+    const { author, cursor, limit } = parsed.data;
+    const pageSize = limit ?? 20;
+    if (author != null && redisClient.isOpen) {
+      try {
+        const cacheKey = `${BY_AUTHOR_CACHE_PREFIX}${encodeURIComponent(author)}:${cursor ?? ""}:${pageSize}`;
+        const cached = await redisClient.get(cacheKey);
+        if (cached) return reply.send(JSON.parse(cached) as { items: unknown[]; nextCursor: string | null });
+      } catch {
+        // fall through
+      }
+    }
+    const { items, nextCursor } = await content.listQuotes({ author: author ?? undefined, cursor: cursor ?? undefined, limit: pageSize });
+    const payload = { items, nextCursor };
+    if (author != null && redisClient.isOpen) {
+      try {
+        const cacheKey = `${BY_AUTHOR_CACHE_PREFIX}${encodeURIComponent(author)}:${cursor ?? ""}:${pageSize}`;
+        await redisClient.set(cacheKey, JSON.stringify(payload), { EX: BY_AUTHOR_CACHE_TTL_SEC });
+      } catch {
+        // ignore
+      }
+    }
+    if (author != null && items.length === 0) return reply.code(404).send({ error: "no_quotes_for_author" });
+    return reply.send(payload);
+  });
+
   fastify.get("/feed", {
     preHandler: [optionalAuth],
     schema: {
-      tags: ["Quotes"],
+      tags: ["Feed"],
       description: "Public feed. Optional auth returns liked/saved. sort=newest (cursor) or popular (offset).",
       querystring: {
         type: "object",
@@ -158,108 +185,27 @@ export async function quotesRoutes(
     const sort = sortParam ?? "newest";
     const userId = request.user?.id;
 
-    let rows: { id: string; author: string | null; text: string; createdBy: string | null; createdAt: Date; updatedAt: Date | null }[];
+    let rows: Awaited<ReturnType<typeof content.getFeedNewest>>["items"];
     let nextCursor: string | null = null;
     let nextOffset: number | null = null;
 
     if (sort === "popular") {
       const off = offset ?? 0;
-      const likeCountSubquery = dbRead
-        .select({
-          quoteId: quoteLikes.quoteId,
-          likeCount: sql<number>`count(*)::int`.as("like_count"),
-        })
-        .from(quoteLikes)
-        .groupBy(quoteLikes.quoteId)
-        .as("like_counts");
-      rows = await dbRead
-        .select({
-          id: quotes.id,
-          author: quotes.author,
-          text: quotes.text,
-          createdBy: quotes.createdBy,
-          createdAt: quotes.createdAt,
-          updatedAt: quotes.updatedAt,
-        })
-        .from(quotes)
-        .leftJoin(likeCountSubquery, eq(quotes.id, likeCountSubquery.quoteId))
-        .orderBy(
-          desc(sql`coalesce(like_counts.like_count, 0)`),
-          desc(quotes.createdAt),
-          desc(quotes.id),
-        )
-        .limit(pageSize + 1)
-        .offset(off);
-      const hasNext = rows.length > pageSize;
-      const slice = hasNext ? rows.slice(0, pageSize) : rows;
-      nextOffset = hasNext ? off + pageSize : null;
-      rows = slice;
+      const result = await content.getFeedPopular({ offset: off, limit: pageSize });
+      rows = result.items;
+      nextOffset = result.nextOffset;
     } else {
-      if (cursor) {
-        rows = await dbRead
-          .select()
-          .from(quotes)
-          .where(lt(quotes.id, cursor))
-          .orderBy(desc(quotes.createdAt), desc(quotes.id))
-          .limit(pageSize + 1);
-      } else {
-        rows = await dbRead
-          .select()
-          .from(quotes)
-          .orderBy(desc(quotes.createdAt), desc(quotes.id))
-          .limit(pageSize + 1);
-      }
-      const hasNext = rows.length > pageSize;
-      const items = hasNext ? rows.slice(0, pageSize) : rows;
-      nextCursor = hasNext ? items[items.length - 1]?.id ?? null : null;
-      rows = items;
+      const result = await content.getFeedNewest({ cursor: cursor ?? undefined, limit: pageSize });
+      rows = result.items;
+      nextCursor = result.nextCursor;
     }
 
     const quoteIds = rows.map((r) => r.id);
-    const likeCounts: Record<string, number> = {};
-    const likedSet = new Set<string>();
-    const savedSet = new Set<string>();
-
-    if (redisClient.isOpen) {
-      try {
-        const countKeys = quoteIds.map((id) => `${REDIS_LIKE_COUNT_PREFIX}${id}`);
-        const countVals = await redisClient.mGet(countKeys);
-        quoteIds.forEach((id, i) => {
-          const v = countVals[i];
-          likeCounts[id] = v != null ? parseInt(v, 10) : 0;
-          if (Number.isNaN(likeCounts[id])) likeCounts[id] = 0;
-        });
-        if (userId) {
-          for (const qid of quoteIds) {
-            const member = await redisClient.sIsMember(`${REDIS_USER_LIKES_PREFIX}${userId}`, qid);
-            if (member) likedSet.add(qid);
-            const saved = await redisClient.sIsMember(`${REDIS_USER_SAVES_PREFIX}${userId}`, qid);
-            if (saved) savedSet.add(qid);
-          }
-        }
-      } catch {
-        // fall through to DB
-      }
-    }
-
-    if (!redisClient.isOpen && quoteIds.length > 0) {
-      const likeCountRows = await dbRead
-        .select({ quoteId: quoteLikes.quoteId, c: sql<number>`count(*)::int` })
-        .from(quoteLikes)
-        .where(quoteIds.length > 0 ? inArray(quoteLikes.quoteId, quoteIds) : sql`false`)
-        .groupBy(quoteLikes.quoteId);
-      for (const r of likeCountRows) {
-        likeCounts[r.quoteId] = r.c;
-      }
-      if (userId) {
-        const [likedRows, savedRows] = await Promise.all([
-          dbRead.select({ quoteId: quoteLikes.quoteId }).from(quoteLikes).where(eq(quoteLikes.userId, userId)),
-          dbRead.select({ quoteId: savedQuotes.quoteId }).from(savedQuotes).where(eq(savedQuotes.userId, userId)),
-        ]);
-        for (const r of likedRows) likedSet.add(r.quoteId);
-        for (const r of savedRows) savedSet.add(r.quoteId);
-      }
-    }
+    const [likeCounts, likedSet, savedSet] = await Promise.all([
+      content.getLikeCounts(quoteIds),
+      userId ? content.hasLiked(userId, quoteIds) : Promise.resolve(new Set<string>()),
+      userId ? content.hasSaved(userId, quoteIds) : Promise.resolve(new Set<string>()),
+    ]);
 
     const items = rows.map((q) => ({
       ...q,
@@ -274,7 +220,7 @@ export async function quotesRoutes(
   fastify.post("/feed/saved/:quoteId", {
     preHandler: [requireAuth, requireCsrf],
     schema: {
-      tags: ["Quotes"],
+      tags: ["Feed"],
       params: { type: "object", required: ["quoteId"], properties: { quoteId: { type: "string", format: "uuid" } } },
       response: {
         201: { type: "null" },
@@ -295,21 +241,21 @@ export async function quotesRoutes(
     if (redisClient.isOpen) {
       try {
         const added = await redisClient.sAdd(key, parsed.data);
-        await produceQuoteSaveEvent({ userId, quoteId: parsed.data, action: "save" });
+        await content.addSave(userId, parsed.data);
         return reply.code(added ? 201 : 200).send();
       } catch (e) {
         if (!redisClient.isOpen) return reply.code(500).send({ error: "redis_unavailable" });
         throw e;
       }
     }
-    await db.insert(savedQuotes).values({ userId, quoteId: parsed.data }).onConflictDoNothing();
+    await content.addSave(userId, parsed.data);
     return reply.code(201).send();
   });
 
   fastify.delete("/feed/saved/:quoteId", {
     preHandler: [requireAuth, requireCsrf],
     schema: {
-      tags: ["Quotes"],
+      tags: ["Feed"],
       params: { type: "object", required: ["quoteId"], properties: { quoteId: { type: "string", format: "uuid" } } },
       response: {
         204: { type: "null" },
@@ -328,21 +274,21 @@ export async function quotesRoutes(
     if (redisClient.isOpen) {
       try {
         await redisClient.sRem(`${REDIS_USER_SAVES_PREFIX}${userId}`, parsed.data);
-        await produceQuoteSaveEvent({ userId, quoteId: parsed.data, action: "unsave" });
+        await content.removeSave(userId, parsed.data);
         return reply.code(204).send();
       } catch (e) {
         if (!redisClient.isOpen) return reply.code(500).send({ error: "redis_unavailable" });
         throw e;
       }
     }
-    await db.delete(savedQuotes).where(and(eq(savedQuotes.userId, userId), eq(savedQuotes.quoteId, parsed.data)));
+    await content.removeSave(userId, parsed.data);
     return reply.code(204).send();
   });
 
   fastify.post("/feed/likes/:quoteId", {
     preHandler: [requireAuth, requireCsrf],
     schema: {
-      tags: ["Quotes"],
+      tags: ["Feed"],
       params: { type: "object", required: ["quoteId"], properties: { quoteId: { type: "string", format: "uuid" } } },
       response: {
         201: { type: "null" },
@@ -367,21 +313,21 @@ export async function quotesRoutes(
         if (already) return reply.code(200).send();
         await redisClient.sAdd(likesKey, parsed.data);
         await redisClient.incr(countKey);
-        await produceQuoteLikeEvent({ userId, quoteId: parsed.data, action: "like" });
+        await content.addLike(userId, parsed.data);
         return reply.code(201).send();
       } catch (e) {
         if (!redisClient.isOpen) return reply.code(500).send({ error: "redis_unavailable" });
         throw e;
       }
     }
-    await db.insert(quoteLikes).values({ userId, quoteId: parsed.data }).onConflictDoNothing();
+    await content.addLike(userId, parsed.data);
     return reply.code(201).send();
   });
 
   fastify.delete("/feed/likes/:quoteId", {
     preHandler: [requireAuth, requireCsrf],
     schema: {
-      tags: ["Quotes"],
+      tags: ["Feed"],
       params: { type: "object", required: ["quoteId"], properties: { quoteId: { type: "string", format: "uuid" } } },
       response: {
         204: { type: "null" },
@@ -406,142 +352,23 @@ export async function quotesRoutes(
           const n = parseInt(v, 10);
           if (n > 0) await redisClient.decr(countKey);
         }
-        await produceQuoteLikeEvent({ userId, quoteId: parsed.data, action: "unlike" });
+        await content.removeLike(userId, parsed.data);
         return reply.code(204).send();
       } catch (e) {
         if (!redisClient.isOpen) return reply.code(500).send({ error: "redis_unavailable" });
         throw e;
       }
     }
-    await db.delete(quoteLikes).where(and(eq(quoteLikes.userId, userId), eq(quoteLikes.quoteId, parsed.data)));
+    await content.removeLike(userId, parsed.data);
     return reply.code(204).send();
   });
-
-  fastify.get(
-    "/quotes",
-    {
-      preHandler: [requireApiKey],
-      schema: {
-        tags: ["Quotes"],
-        description: "List quotes with optional author filter. When author is set, responses are cached in Redis (5 min). On cache miss, data is read from the read-only Postgres replica.",
-        querystring: {
-          type: "object",
-          properties: {
-            author: {
-              type: "string",
-              minLength: 1,
-              maxLength: 500,
-              description: "Filter by author (case-insensitive). When provided, result is cached.",
-            },
-            cursor: {
-              type: "string",
-              format: "uuid",
-              description: "Pagination cursor from previous response nextCursor.",
-            },
-            limit: {
-              type: "integer",
-              minimum: 1,
-              maximum: 100,
-              default: 20,
-              description: "Page size (1–100). Sent as query string, e.g. limit=20.",
-            },
-          },
-        },
-        response: {
-          200: {
-            type: "object",
-            properties: {
-              items: { type: "array", items: quoteSchema },
-              nextCursor: { type: ["string", "null"] },
-            },
-          },
-          400: { type: "object", properties: { error: { type: "string" } } },
-          404: { type: "object", properties: { error: { type: "string" } } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const parsed = listQuerySchema.safeParse(request.query);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: "invalid_query" });
-      }
-      const { author, cursor, limit } = parsed.data;
-      const pageSize = limit ?? 20;
-
-      if (author != null && redisClient.isOpen) {
-        const cacheKey = `${BY_AUTHOR_CACHE_PREFIX}${encodeURIComponent(author)}:${cursor ?? ""}:${pageSize}`;
-        try {
-          const cached = await redisClient.get(cacheKey);
-          if (cached) {
-            return reply.send(JSON.parse(cached) as { items: unknown[]; nextCursor: string | null });
-          }
-        } catch {
-          // fall through to read replica
-        }
-      }
-
-      const authorCondition = author != null ? sql`lower(${quotes.author}) = lower(${author})` : undefined;
-
-      let rows;
-      if (cursor) {
-        rows = authorCondition
-          ? await dbRead
-              .select()
-              .from(quotes)
-              .where(and(authorCondition, lt(quotes.id, cursor)))
-              .orderBy(desc(quotes.createdAt), desc(quotes.id))
-              .limit(pageSize + 1)
-          : await dbRead
-              .select()
-              .from(quotes)
-              .where(lt(quotes.id, cursor))
-              .orderBy(desc(quotes.createdAt), desc(quotes.id))
-              .limit(pageSize + 1);
-      } else {
-        rows = authorCondition
-          ? await dbRead
-              .select()
-              .from(quotes)
-              .where(authorCondition)
-              .orderBy(desc(quotes.createdAt), desc(quotes.id))
-              .limit(pageSize + 1)
-          : await dbRead
-              .select()
-              .from(quotes)
-              .orderBy(desc(quotes.createdAt), desc(quotes.id))
-              .limit(pageSize + 1);
-      }
-
-      const hasNext = rows.length > pageSize;
-      const items = hasNext ? rows.slice(0, pageSize) : rows;
-      const nextCursor = hasNext ? items[items.length - 1]?.id ?? null : null;
-      const payload = { items, nextCursor };
-
-      if (author != null && redisClient.isOpen) {
-        const cacheKey = `${BY_AUTHOR_CACHE_PREFIX}${encodeURIComponent(author)}:${cursor ?? ""}:${pageSize}`;
-        try {
-          await redisClient.set(cacheKey, JSON.stringify(payload), {
-            EX: BY_AUTHOR_CACHE_TTL_SEC,
-          });
-        } catch {
-          // ignore
-        }
-      }
-
-      if (author != null && items.length === 0) {
-        return reply.code(404).send({ error: "no_quotes_for_author" });
-      }
-
-      return reply.send(payload);
-    },
-  );
 
   fastify.get(
     "/dashboard/quotes",
     {
       preHandler: [requireAuth],
       schema: {
-        tags: ["Quotes"],
+        tags: ["Dashboard"],
         response: {
           200: { type: "object", properties: { items: { type: "array", items: quoteSchema } } },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -553,11 +380,7 @@ export async function quotesRoutes(
         return reply.code(401).send({ error: "unauthorized" });
       }
 
-      const rows = await dbRead
-        .select()
-        .from(quotes)
-        .where(eq(quotes.createdBy, request.user.id));
-
+      const rows = await content.getDashboardQuotes(request.user.id);
       return reply.send({ items: rows });
     },
   );
@@ -567,7 +390,7 @@ export async function quotesRoutes(
     {
       preHandler: [requireAuth],
       schema: {
-        tags: ["Quotes"],
+        tags: ["Dashboard"],
         response: {
           200: { type: "object", properties: { items: { type: "array", items: feedItemSchema } } },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -580,90 +403,23 @@ export async function quotesRoutes(
       }
 
       const userId = request.user.id;
-      const likedQuoteIds: string[] = [];
-      let redisSuccess = false;
-
-      if (redisClient.isOpen) {
-        try {
-          const members = await redisClient.sMembers(`${REDIS_USER_LIKES_PREFIX}${userId}`);
-          likedQuoteIds.push(...members);
-          redisSuccess = true;
-        } catch {
-        }
-      }
-
-      if (!redisSuccess) {
-        const dbLikedRows = await dbRead
-          .select({ quoteId: quoteLikes.quoteId })
-          .from(quoteLikes)
-          .where(eq(quoteLikes.userId, userId));
-        likedQuoteIds.push(...dbLikedRows.map((r) => r.quoteId));
-      }
-
+      const likedQuoteIds = await content.getLikedQuoteIds(userId);
       if (likedQuoteIds.length === 0) {
         return reply.send({ items: [] });
       }
-
-      const rows = await dbRead
-        .select()
-        .from(quotes)
-        .where(inArray(quotes.id, likedQuoteIds))
-        .orderBy(desc(quotes.createdAt));
-
+      const rows = await content.getQuotesByIds(likedQuoteIds);
+      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       const quoteIds = rows.map((r) => r.id);
-      const likeCounts: Record<string, number> = {};
-      const likedSet = new Set<string>(quoteIds);
-
-      if (redisClient.isOpen) {
-        try {
-          const countKeys = quoteIds.map((id) => `${REDIS_LIKE_COUNT_PREFIX}${id}`);
-          const countVals = await redisClient.mGet(countKeys);
-          quoteIds.forEach((id, i) => {
-            const v = countVals[i];
-            likeCounts[id] = v != null ? parseInt(v, 10) : 0;
-            if (Number.isNaN(likeCounts[id])) likeCounts[id] = 0;
-          });
-        } catch {
-        }
-      }
-
-      if (!redisClient.isOpen || Object.keys(likeCounts).length === 0) {
-        const likeCountRows = await dbRead
-          .select({ quoteId: quoteLikes.quoteId, c: sql<number>`count(*)::int` })
-          .from(quoteLikes)
-          .where(inArray(quoteLikes.quoteId, quoteIds))
-          .groupBy(quoteLikes.quoteId);
-        for (const r of likeCountRows) {
-          likeCounts[r.quoteId] = r.c;
-        }
-      }
-
-      const savedSet = new Set<string>();
-      if (redisClient.isOpen) {
-        try {
-          for (const qid of quoteIds) {
-            const saved = await redisClient.sIsMember(`${REDIS_USER_SAVES_PREFIX}${userId}`, qid);
-            if (saved) savedSet.add(qid);
-          }
-        } catch {
-        }
-      } else {
-        const savedRows = await dbRead
-          .select({ quoteId: savedQuotes.quoteId })
-          .from(savedQuotes)
-          .where(eq(savedQuotes.userId, userId));
-        for (const r of savedRows) {
-          if (quoteIds.includes(r.quoteId)) savedSet.add(r.quoteId);
-        }
-      }
-
+      const [likeCounts, savedSet] = await Promise.all([
+        content.getLikeCounts(quoteIds),
+        content.hasSaved(userId, quoteIds),
+      ]);
       const items = rows.map((q) => ({
         ...q,
         likeCount: likeCounts[q.id] ?? 0,
         liked: true,
         saved: savedSet.has(q.id),
       }));
-
       return reply.send({ items });
     },
   );
@@ -673,7 +429,7 @@ export async function quotesRoutes(
     {
       preHandler: [requireAuth],
       schema: {
-        tags: ["Quotes"],
+        tags: ["Dashboard"],
         response: {
           200: { type: "object", properties: { items: { type: "array", items: feedItemSchema } } },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -686,90 +442,23 @@ export async function quotesRoutes(
       }
 
       const userId = request.user.id;
-      const savedQuoteIds: string[] = [];
-      let redisSuccess = false;
-
-      if (redisClient.isOpen) {
-        try {
-          const members = await redisClient.sMembers(`${REDIS_USER_SAVES_PREFIX}${userId}`);
-          savedQuoteIds.push(...members);
-          redisSuccess = true;
-        } catch {
-        }
-      }
-
-      if (!redisSuccess) {
-        const dbSavedRows = await dbRead
-          .select({ quoteId: savedQuotes.quoteId })
-          .from(savedQuotes)
-          .where(eq(savedQuotes.userId, userId));
-        savedQuoteIds.push(...dbSavedRows.map((r) => r.quoteId));
-      }
-
+      const savedQuoteIds = await content.getSavedQuoteIds(userId);
       if (savedQuoteIds.length === 0) {
         return reply.send({ items: [] });
       }
-
-      const rows = await dbRead
-        .select()
-        .from(quotes)
-        .where(inArray(quotes.id, savedQuoteIds))
-        .orderBy(desc(quotes.createdAt));
-
+      const rows = await content.getQuotesByIds(savedQuoteIds);
+      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       const quoteIds = rows.map((r) => r.id);
-      const likeCounts: Record<string, number> = {};
-      const savedSet = new Set<string>(quoteIds);
-
-      if (redisClient.isOpen) {
-        try {
-          const countKeys = quoteIds.map((id) => `${REDIS_LIKE_COUNT_PREFIX}${id}`);
-          const countVals = await redisClient.mGet(countKeys);
-          quoteIds.forEach((id, i) => {
-            const v = countVals[i];
-            likeCounts[id] = v != null ? parseInt(v, 10) : 0;
-            if (Number.isNaN(likeCounts[id])) likeCounts[id] = 0;
-          });
-        } catch {
-        }
-      }
-
-      if (!redisClient.isOpen || Object.keys(likeCounts).length === 0) {
-        const likeCountRows = await dbRead
-          .select({ quoteId: quoteLikes.quoteId, c: sql<number>`count(*)::int` })
-          .from(quoteLikes)
-          .where(inArray(quoteLikes.quoteId, quoteIds))
-          .groupBy(quoteLikes.quoteId);
-        for (const r of likeCountRows) {
-          likeCounts[r.quoteId] = r.c;
-        }
-      }
-
-      const likedSet = new Set<string>();
-      if (redisClient.isOpen) {
-        try {
-          for (const qid of quoteIds) {
-            const liked = await redisClient.sIsMember(`${REDIS_USER_LIKES_PREFIX}${userId}`, qid);
-            if (liked) likedSet.add(qid);
-          }
-        } catch {
-        }
-      } else {
-        const likedRows = await dbRead
-          .select({ quoteId: quoteLikes.quoteId })
-          .from(quoteLikes)
-          .where(eq(quoteLikes.userId, userId));
-        for (const r of likedRows) {
-          if (quoteIds.includes(r.quoteId)) likedSet.add(r.quoteId);
-        }
-      }
-
+      const [likeCounts, likedSet] = await Promise.all([
+        content.getLikeCounts(quoteIds),
+        content.hasLiked(userId, quoteIds),
+      ]);
       const items = rows.map((q) => ({
         ...q,
         likeCount: likeCounts[q.id] ?? 0,
         liked: likedSet.has(q.id),
         saved: true,
       }));
-
       return reply.send({ items });
     },
   );
@@ -779,7 +468,7 @@ export async function quotesRoutes(
     {
       preHandler: [requireAuth, requireCsrf],
       schema: {
-        tags: ["Quotes"],
+        tags: ["Dashboard"],
         body: {
           type: "object",
           required: ["text"],
@@ -802,15 +491,11 @@ export async function quotesRoutes(
         return reply.code(400).send({ error: "invalid_body" });
       }
 
-      const [created] = await db
-        .insert(quotes)
-        .values({
-          text: parsed.data.text,
-          author: parsed.data.author,
-          createdBy: request.user.id,
-        })
-        .returning();
-
+      const created = await content.createQuote({
+        text: parsed.data.text,
+        author: parsed.data.author ?? undefined,
+        createdBy: request.user.id,
+      });
       return reply.code(201).send(created);
     },
   );
@@ -820,7 +505,7 @@ export async function quotesRoutes(
     {
       preHandler: [requireAuth, requireCsrf],
       schema: {
-        tags: ["Quotes"],
+        tags: ["Dashboard"],
         params: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
         body: { type: "object", properties: { text: { type: "string", minLength: 1 }, author: { type: "string" } } },
         response: {
@@ -847,21 +532,16 @@ export async function quotesRoutes(
         return reply.code(400).send({ error: "invalid_body" });
       }
 
-      const [updated] = await db
-        .update(quotes)
-        .set(parsed.data)
-        .where(
-          and(
-            eq(quotes.id, idResult.data),
-            eq(quotes.createdBy, request.user.id),
-          ),
-        )
-        .returning();
-
-      if (!updated) {
+      const existing = await content.getQuoteById(idResult.data);
+      if (!existing || existing.createdBy !== request.user.id) {
         return reply.code(404).send({ error: "not_found" });
       }
 
+      const updated = await content.updateQuote(idResult.data, {
+        text: parsed.data.text,
+        author: parsed.data.author,
+      });
+      if (!updated) return reply.code(404).send({ error: "not_found" });
       return reply.send(updated);
     },
   );
@@ -871,7 +551,7 @@ export async function quotesRoutes(
     {
       preHandler: [requireAuth, requireCsrf],
       schema: {
-        tags: ["Quotes"],
+        tags: ["Dashboard"],
         params: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
         response: {
           204: { type: "null" },
@@ -893,20 +573,12 @@ export async function quotesRoutes(
         return reply.code(400).send({ error: "invalid_id" });
       }
 
-      const [deleted] = await db
-        .delete(quotes)
-        .where(
-          and(
-            eq(quotes.id, idResult.data),
-            eq(quotes.createdBy, request.user.id),
-          ),
-        )
-        .returning();
-
-      if (!deleted) {
+      const existing = await content.getQuoteById(idResult.data);
+      if (!existing || existing.createdBy !== request.user.id) {
         return reply.code(404).send({ error: "not_found" });
       }
 
+      await content.deleteQuote(idResult.data);
       return reply.code(204).send();
     },
   );

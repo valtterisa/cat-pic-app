@@ -29,19 +29,25 @@ export const createApp = () => {
   app.register(helmet);
   app.register(cookie);
   app.register(cors, {
-    origin: env.CORS_ORIGINS,
+    origin: env.CORS_ORIGINS.length ? env.CORS_ORIGINS : false,
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key", "X-CSRF-Token"],
   });
 
+  const apiBase = process.env.API_PUBLIC_URL ?? `http://localhost:${env.PORT}`;
   app.register(swagger, {
     openapi: {
       openapi: "3.0.0",
       info: {
         title: "Motivational Quotes API",
-        description: "API for motivational quotes, auth, and dashboard",
+        description: "Same base path: public (GET /api/v1/quotes, /api/v1/quotes/random) use X-API-Key; feed and dashboard use cookie auth.",
         version: "1.0.0",
       },
-      servers: [{ url: "/", description: "Current" }],
+      servers: [
+        { url: apiBase.replace(/\/$/, ""), description: "API server" },
+        { url: "/", description: "Current origin" },
+      ],
     },
   });
 

@@ -15,41 +15,6 @@ export const users = pgTable("users", {
     .notNull(),
 });
 
-export const quotes = pgTable("quotes", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  author: text("author"),
-  text: text("text").notNull(),
-  createdBy: uuid("created_by").references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-});
-
-export const savedQuotes = pgTable("saved_quotes", {
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  quoteId: uuid("quote_id")
-    .notNull()
-    .references(() => quotes.id),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-}, (t) => [{ primaryKey: { columns: [t.userId, t.quoteId] } }]);
-
-export const quoteLikes = pgTable("quote_likes", {
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  quoteId: uuid("quote_id")
-    .notNull()
-    .references(() => quotes.id),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-}, (t) => [{ primaryKey: { columns: [t.userId, t.quoteId] } }]);
-
 export const apiKeys = pgTable("api_keys", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
@@ -62,4 +27,3 @@ export const apiKeys = pgTable("api_keys", {
     .notNull(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
-

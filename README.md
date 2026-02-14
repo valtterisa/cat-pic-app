@@ -284,30 +284,23 @@ cd frontend && pnpm test
 
 ## Project Structure
 
+Two deployable folders; Railway provides Postgres, Redis, and MongoDB (env vars). See [docs/RAILWAY-DEPLOY.md](docs/RAILWAY-DEPLOY.md).
+
 ```
 motivational-quotes/
-├── backend/
+├── backend/                    # API – Dockerfile, deploy as one service
 │   ├── src/
-│   │   ├── app.ts              # Fastify app and plugins
-│   │   ├── server.ts           # Entry, migrations, listen
-│   │   ├── config/             # Env
-│   │   ├── db/                 # Drizzle, schema, migrate
-│   │   ├── redis/              # Redis client
-│   │   ├── middleware/         # Auth, API key, rate-limit, error (hooks)
-│   │   ├── modules/            # Auth, api-keys, quotes (routes)
-│   │   └── types/              # Fastify request augmentation
-│   ├── migrations/             # SQL migrations
+│   │   ├── app.ts
+│   │   ├── config/, db/, redis/, middleware/, modules/, store/
+│   │   └── ...
+│   ├── migrations/
 │   └── Dockerfile
-├── frontend/
+├── frontend/                   # Web app – Dockerfile, deploy as one service
 │   ├── src/
-│   │   ├── routes/
-│   │   ├── components/
-│   │   ├── lib/
-│   │   └── state/
+│   │   ├── routes/, components/, lib/
+│   │   └── ...
 │   └── Dockerfile
-├── docker/
-│   └── db-init/                # Postgres init (e.g. replication)
-├── docker-compose.yml
+├── docker-compose.yml          # Backend + frontend (expects DATABASE_URL, REDIS_URL, MONGODB_URI from env)
 └── .env.example
 ```
 

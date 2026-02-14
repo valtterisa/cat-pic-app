@@ -1,106 +1,11 @@
 services:
-  db:
-    image: postgres:16
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-quotes}
-    volumes:
-      - db-data:/var/lib/postgresql/data
-      - ./docker/db-init/01-allow-replication.sh:/docker-entrypoint-initdb.d/01-allow-replication.sh
-    healthcheck:
-      test: ["CMD-SHELL", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  postgres-replica:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-quotes}
-    volumes:
-      - replica-data:/var/lib/postgresql/data
-    command: >
-      bash -c "
-      if [ ! -f /var/lib/postgresql/data/standby.signal ]; then
-        until pg_isready -h db -p 5432 -U $$POSTGRES_USER; do sleep 2; done;
-        rm -rf /var/lib/postgresql/data/* 2>/dev/null;
-        PGPASSWORD=$$POSTGRES_PASSWORD pg_basebackup -h db -p 5432 -U $$POSTGRES_USER -D /var/lib/postgresql/data -R -X stream -v;
-        chown -R postgres:postgres /var/lib/postgresql/data;
-      fi;
-      exec docker-entrypoint.sh postgres
-      "
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7
-    ports:
-      - "${REDIS_PORT:-6380}:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  kafka:
-    image: apache/kafka:3.7.0
-    ports:
-      - "${KAFKA_PORT:-9092}:9092"
-    volumes:
-      - kafka-data:/var/kafka
-      - ./docker/kafka/server.properties:/opt/kafka/config/custom/server.properties
-    user: root
-    entrypoint: ["/bin/bash", "-c"]
-    command: >
-      "
-      mkdir -p /var/kafka/data /var/kafka/metadata &&
-      rm -rf /tmp/kraft-combined-logs 2>/dev/null || true &&
-      if [ ! -f /var/kafka/data/meta.properties ] && [ ! -f /var/kafka/metadata/meta.properties ]; then
-        echo 'Formatting Kafka storage (first run)...' &&
-        rm -rf /var/kafka/data/* /var/kafka/metadata/* 2>/dev/null || true &&
-        CLUSTER_ID=$$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-22) &&
-        echo \"Using cluster ID: $$CLUSTER_ID\" &&
-        /opt/kafka/bin/kafka-storage.sh format -t $$CLUSTER_ID -c /opt/kafka/config/custom/server.properties &&
-        echo 'Format completed successfully'
-      else
-        echo 'meta.properties found, skipping format'
-      fi &&
-      exec /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/custom/server.properties
-      "
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
-      interval: 5s
-      timeout: 30s
-      retries: 12
-
   backend:
     build: ./backend
-    depends_on:
-      db:
-        condition: service_healthy
-      postgres-replica:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
     environment:
       PORT: ${BACKEND_PORT:-3001}
-      DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-quotes}
-      DATABASE_READ_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres-replica:5432/${POSTGRES_DB:-quotes}
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:9092
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL (e.g. from Railway Postgres)}
+      REDIS_URL: ${REDIS_URL:?Set REDIS_URL (e.g. from Railway Redis)}
+      MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI (e.g. from Railway MongoDB)}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
     ports:
@@ -117,19 +22,6 @@ services:
       timeout: 10s
       retries: 3
 
-  feed-consumer:
-    build: ./backend
-    command: ["sh", "-c", "export KAFKA_BROKERS=kafka:9092 && exec node dist/workers/feed-events-consumer.js"]
-    depends_on:
-      db:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-quotes}
-      KAFKA_BROKERS: kafka:9092
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
-
   frontend:
     build:
       context: ./frontend
@@ -141,8 +33,3 @@ services:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3001}
     ports:
       - "${FRONTEND_PORT:-3000}:4173"
-
-volumes:
-  db-data:
-  replica-data:
-  kafka-data:

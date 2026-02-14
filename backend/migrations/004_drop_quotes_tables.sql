@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS saved_quotes;
+DROP TABLE IF EXISTS quote_likes;
+DROP TABLE IF EXISTS quotes;
